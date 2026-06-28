@@ -1,5 +1,6 @@
 # Session Lifecycle
 
+> **Related:** [Architecture](../../Architecture/01-Current-Architecture.md)
 > **Audience:** Gateway developers and maintainers
 > **Source files:** `gateway/session.py` (~1444 lines), `gateway/run.py` (~16800 lines), `gateway/config.py`
 > **Last updated:** 2026-06-16

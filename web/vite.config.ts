@@ -85,6 +85,51 @@ export default defineConfig({
   build: {
     outDir: "../hermes_cli/web_dist",
     emptyOutDir: true,
+    chunkSizeWarningLimit: 800,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("/node_modules/")) {
+            // vendor-react: React runtime (largest vendor chunk)
+            if (
+              id.includes("/node_modules/react/") ||
+              id.includes("/node_modules/react-dom/") ||
+              id.includes("/node_modules/scheduler/")
+            ) {
+              return "vendor-react";
+            }
+            // vendor-router: react-router + related
+            if (
+              id.includes("/node_modules/react-router") ||
+              id.includes("/node_modules/@remix-run/")
+            ) {
+              return "vendor-router";
+            }
+            // vendor-ui: design system + icons
+            if (
+              id.includes("/node_modules/@nous-research/") ||
+              id.includes("/node_modules/lucide-react/") ||
+              id.includes("/node_modules/@radix-ui/")
+            ) {
+              return "vendor-ui";
+            }
+            // vendor-3d: three.js / gl (heavy, rarely needed on first load)
+            if (
+              id.includes("/node_modules/three/") ||
+              id.includes("/node_modules/@react-three/") ||
+              id.includes("/node_modules/leva/")
+            ) {
+              return "vendor-3d";
+            }
+            // All other node_modules → vendor-misc
+            return "vendor-misc";
+          }
+          // App modules — split by feature
+          if (id.includes("/src/app/chat/")) return "chat";
+          if (id.includes("/src/app/pet/")) return "pet";
+        },
+      },
+    },
   },
   server: {
     proxy: {

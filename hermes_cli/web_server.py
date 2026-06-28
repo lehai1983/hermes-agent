@@ -37,7 +37,7 @@ import urllib.parse
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 
@@ -89,7 +89,7 @@ try:
         WebSocket, WebSocketDisconnect,
     )
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
@@ -104,7 +104,7 @@ except ImportError:
             WebSocket, WebSocketDisconnect,
         )
         from fastapi.middleware.cors import CORSMiddleware
-        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel
     except Exception:
@@ -170,6 +170,11 @@ async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
     app.state.pty_active_session_files = {}  # dict[str, Path]
+    # Per-session SSE subscriber registry: session_id → set of asyncio.Queue
+    # Used by GET /api/sessions/{session_id}/events to push event frames to
+    # web-native chat clients streaming over SSE instead of WebSocket.
+    app.state.sse_subscribers: Dict[str, Set[asyncio.Queue]] = {}
+    app.state.sse_subscribers_lock = asyncio.Lock()
     # Serializes chat-argv resolution so concurrent /api/pty connections
     # don't trigger overlapping ``npm install`` / ``npm run build`` work.
     # On app.state (not a module global) so the Lock binds to the running
@@ -7745,6 +7750,215 @@ def _open_session_db_for_profile(profile: Optional[str]):
     return SessionDB(db_path=Path(home) / "state.db")
 
 
+# ---------------------------------------------------------------------------
+# REST proxies to tui_gateway JSON-RPC (TASK-104)
+#
+# Desktop clients call these RPCs over IPC/stdio; the web chat surface needs
+# plain HTTP equivalents. Each endpoint authenticates via the shared
+# _sse_auth_ok gate, builds a JSON-RPC request dict, and calls
+# tui_gateway.server.dispatch().  Short handlers return a response dict
+# inline; long handlers (session.branch) return None because the work is
+# dispatched to a thread pool — in that case we report ok immediately and
+# the result surfaces over the SSE /api/sessions/{id}/events stream.
+# ---------------------------------------------------------------------------
+
+
+def _build_rpc_request(method: str, params: dict) -> dict:
+    """Construct a JSON-RPC 2.0 request dict with a unique correlation id."""
+    return {
+        "jsonrpc": "2.0",
+        "id": secrets.token_hex(8),
+        "method": method,
+        "params": params,
+    }
+
+
+def _rpc_response_to_rest(resp: dict | None) -> dict:
+    """Translate a JSON-RPC response/envelope into our REST {ok, ...} shape.
+
+    * ``resp`` is None  → long handler dispatched to the pool (already
+      accepted, result streams over SSE).  Return {ok: true}.
+    * ``resp`` has ``error`` → normalize to {ok: false, error: "..."}.
+    * ``resp`` has ``result`` → return the result dict with ``ok: true``.
+    """
+    if resp is None:
+        return {"ok": True}
+    if "error" in resp:
+        err = resp["error"]
+        msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+        return {"ok": False, error: msg}
+    if "result" in resp:
+        result = resp["result"] if isinstance(resp["result"], dict) else {"value": resp["result"]}
+        result.setdefault("ok", True)
+        return result
+    # Fallback: return the raw envelope
+    return {"ok": True, "data": resp}
+
+
+@app.post("/api/sessions/{session_id}/messages")
+async def post_session_message(session_id: str, request: Request) -> dict:
+    """Submit a prompt to a session (proxies to ``prompt.submit``).
+
+    Body::
+
+        { "text": "hello world", ... }
+
+    Any extra keys in the body are forwarded as params, giving callers a
+    passthrough for model overrides, context, etc.  The ``text`` key is
+    required.
+    """
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        raise HTTPException(status_code=404, detail="embedded chat disabled")
+    if not await _sse_auth_ok(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+
+    text = body.get("text")
+    if not text or not isinstance(text, str):
+        raise HTTPException(status_code=400, detail="\"text\" must be a non-empty string")
+
+    # Build params from body, ensuring session_id is set
+    params = {**body, "session_id": session_id}
+    rpc_req = _build_rpc_request("prompt.submit", params)
+
+    try:
+        from tui_gateway.server import dispatch
+        resp = dispatch(rpc_req)
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="tui_gateway is not installed; start with `hermes dashboard`",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return _rpc_response_to_rest(resp)
+
+
+@app.post("/api/sessions/{session_id}/interrupt")
+async def post_session_interrupt(session_id: str, request: Request) -> dict:
+    """Interrupt (stop) the agent's current generation for a session.
+
+    Proxies to ``session.interrupt``.  Body is optional (may be empty ``{}``).
+    """
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        raise HTTPException(status_code=404, detail="embedded chat disabled")
+    if not await _sse_auth_ok(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Accept optional body (ignored — session_id is the only param we need)
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = ()
+    except Exception:
+        body = {}
+
+    params = {"session_id": session_id}
+    rpc_req = _build_rpc_request("session.interrupt", params)
+
+    try:
+        from tui_gateway.server import dispatch
+        resp = dispatch(rpc_req)
+    except ImportError:
+        raise HTTPException(status_code=503, detail="tui_gateway not installed")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return _rpc_response_to_rest(resp)
+
+
+@app.get("/api/sessions/{session_id}/status")
+async def get_session_status_rpc(session_id: str, request: Request) -> dict:
+    """Return live session status (proxies to ``session.status``).
+
+    Response shape matches the JSON-RPC result with extra ``ok`` flag::
+
+        { "ok": true, "model": "...", "state": "idle|working", ... }
+    """
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        raise HTTPException(status_code=404, detail="embedded chat disabled")
+    if not await _sse_auth_ok(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    rpc_req = _build_rpc_request("session.status", {"session_id": session_id})
+
+    try:
+        from tui_gateway.server import dispatch
+        resp = dispatch(rpc_req)
+    except ImportError:
+        raise HTTPException(status_code=503, detail="tui_gateway not installed")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return _rpc_response_to_rest(resp)
+
+
+@app.post("/api/sessions/{session_id}/branch")
+async def post_session_branch(session_id: str, request: Request) -> dict:
+    """Branch a session (proxies to ``session.branch``)::
+
+        { "message_id": "<optional anchor message id>" }
+
+    ``session.branch`` is a long handler — it is dispatched to the RPC pool
+    and returns immediately.  The new session surfaces over SSE; we report
+    ``{ok: true}`` here to confirm acceptance.
+    """
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        raise HTTPException(status_code=404, detail="embedded chat disabled")
+    if not await _sse_auth_ok(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+    except Exception:
+        body = {}
+
+    message_id = body.get("message_id")
+    params: dict = {"session_id": session_id}
+    if message_id and isinstance(message_id, str):
+        params["message_id"] = message_id
+
+    rpc_req = _build_rpc_request("session.branch", params)
+
+    try:
+        from tui_gateway.server import dispatch
+        resp = dispatch(rpc_req)
+    except ImportError:
+        raise HTTPException(status_code=503, detail="tui_gateway not installed")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return _rpc_response_to_rest(resp)
+
+
+@app.get("/api/sessions/{session_id}/stream")
+async def get_session_stream(session_id: str, request: Request):
+    """Alias that proxies GET traffic to the SSE events endpoint.
+
+    Lets the REST client use a single, memorable URL for the event stream
+    without needing to know the canonical /events path.  Delegates to the
+    real SSE handler so auth, heartbeat, and subscriber management are
+    shared.
+    """
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        raise HTTPException(status_code=404, detail="embedded chat disabled")
+    if not await _sse_auth_ok(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Delegate to the canonical SSE handler (session_events_sse).
+    return await session_events_sse(request, session_id)
+
+
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
     db = _open_session_db_for_profile(profile)
@@ -12026,6 +12240,12 @@ async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
             # will remove it from the registry on its next iteration.
             _log.warning("broadcast send failed for subscriber on %s", channel, exc_info=True)
 
+    # Fan out to SSE subscribers whose session_id matches the payload.
+    # Event payloads are JSON-RPC event frames that may carry a session_id
+    # (e.g. {"type": "message.delta", "session_id": "xxx", ...}). When they do,
+    # push a copy to every Queue subscribed for that session.
+    await _broadcast_sse(app, channel, payload)
+
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
     """Return the channel id from the query string or None if invalid."""
@@ -12350,6 +12570,191 @@ async def events_ws(ws: WebSocket) -> None:
 
                 if not subs:
                     event_channels.pop(channel, None)
+
+
+# ---------------------------------------------------------------------------
+# SSE event streaming for per-session chat events.
+#
+# Web-native chat clients (React SPA via EventSource or fetch streaming)
+# subscribe to GET /api/sessions/{session_id}/events to receive real-time
+# event frames for a specific session. This is the SSE counterpart of the
+# /api/events WebSocket, filtered by session_id at the server layer so each
+# client only sees frames belonging to its session.
+# ---------------------------------------------------------------------------
+
+
+async def _broadcast_sse(app: Any, channel: str, payload: str) -> None:
+    """Push a JSON event payload to all SSE queues whose session matches.
+
+    The payload is a JSON-RPC event frame. If it contains a ``session_id``
+    field the frame is enqueued into every ``asyncio.Queue`` registered for
+    that session via ``app.state.sse_subscribers``. Frames without a
+    ``session_id`` are dropped silently — SSE consumers are inherently
+    per-session, so unfiltered broadcast frames have no destination.
+    """
+    try:
+        parsed = json.loads(payload)
+    except (json.JSONDecodeError, TypeError):
+        return
+
+    session_id = parsed.get("session_id")
+    if not session_id:
+        return
+
+    try:
+        sid = str(session_id)
+    except Exception:
+        return
+
+    sse_subscribers = getattr(app.state, "sse_subscribers", None)
+    sse_lock = getattr(app.state, "sse_subscribers_lock", None)
+    if sse_subscribers is None or sse_lock is None:
+        return
+
+    async with sse_lock:
+        queues = list(sse_subscribers.get(sid, ()))
+
+    if not queues:
+        return
+
+    dead: list = []
+    for q in queues:
+        try:
+            q.put_nowait(payload)
+        except Exception:
+            dead.append(q)
+
+    if dead:
+        async with sse_lock:
+            subs = sse_subscribers.get(sid)
+            if subs is not None:
+                subs.difference_update(dead)
+                if not subs:
+                    sse_subscribers.pop(sid, None)
+
+
+async def _sse_auth_ok(request: Request) -> bool:
+    """Return True when the SSE request carries a valid credential.
+
+    Mirrors the WS auth model: in gated mode a single-use ``?ticket=``
+    query param is consumed against the dashboard-auth ticket store;
+    otherwise the legacy ``?token=`` path is accepted. Header-based
+    ``X-Hermes-Session-Token`` (as used by the SPA) is also accepted.
+    """
+    # Header-based auth (SPA sends X-Hermes-Session-Token)
+    session_header = request.headers.get(_SESSION_HEADER_NAME, "")
+    if session_header and hmac.compare_digest(
+        session_header.encode(),
+        _SESSION_TOKEN.encode(),
+    ):
+        return True
+
+    auth = request.headers.get("authorization", "")
+    if auth and hmac.compare_digest(
+        auth.encode(),
+        f"Bearer {_SESSION_TOKEN}".encode(),
+    ):
+        return True
+
+    auth_required = bool(getattr(request.app.state, "auth_required", False))
+    if auth_required:
+        # Lazy import — only needed when the gate is engaged.
+        from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
+        from hermes_cli.dashboard_auth.ws_tickets import (
+            TicketInvalid,
+            consume_ticket,
+        )
+
+        ticket = request.query_params.get("ticket", "")
+        if not ticket:
+            return False
+        try:
+            consume_ticket(ticket)
+            return True
+        except TicketInvalid as exc:
+            audit_log(
+                AuditEvent.WS_TICKET_REJECTED,
+                reason=f"SSE ticket: {exc}",
+                ip=(request.client.host if request.client else ""),
+                path=request.url.path,
+            )
+            return False
+
+    # Legacy mode: accept ?token=
+    token = request.query_params.get("token", "")
+    if token and hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+        return True
+
+    return False
+
+
+@app.get("/api/sessions/{session_id}/events")
+async def session_events_sse(request: Request, session_id: str) -> Response:
+    """Stream per-session chat events as Server-Sent Events.
+
+    The client opens this endpoint after creating/resuming a session (via
+    JSON-RPC on /api/ws or REST) to receive real-time event frames scoped
+    to that session. The stream stays open until the client disconnects,
+    sending a heartbeat comment every 15s to defeat proxy idle timeouts.
+    """
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        raise HTTPException(status_code=404, detail="embedded chat disabled")
+
+    if not await _sse_auth_ok(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    sse_subscribers = getattr(request.app.state, "sse_subscribers", None)
+    sse_lock = getattr(request.app.state, "sse_subscribers_lock", None)
+    if sse_subscribers is None or sse_lock is None:
+        raise HTTPException(status_code=503, detail="SSE not initialised")
+
+    # Validate session_id is a non-empty, path-safe string
+    sid = session_id.strip()
+    if not sid or "/" in sid or "\\" in sid or "\x00" in sid:
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+
+    async with sse_lock:
+        sse_subscribers.setdefault(sid, set()).add(queue)
+
+    async def event_generator():
+        try:
+            # Initial comment so EventSource opens immediately
+            yield b": connected\n\n"
+            while True:
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    data = payload if isinstance(payload, str) else json.dumps(payload)
+                    yield f"data: {data}\n\n".encode("utf-8")
+                except asyncio.TimeoutError:
+                    # Heartbeat — keeps the connection alive through proxies
+                    yield b": heartbeat\n\n"
+                except asyncio.CancelledError:
+                    return
+        except asyncio.CancelledError:
+            return
+        except GeneratorExit:
+            return
+        except Exception:
+            _log.debug("SSE generator error for session %s", sid, exc_info=True)
+        finally:
+            async with sse_lock:
+                subs = sse_subscribers.get(sid)
+                if subs is not None:
+                    subs.discard(queue)
+                    if not subs:
+                        sse_subscribers.pop(sid, None)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _normalise_prefix(raw: Optional[str]) -> str:

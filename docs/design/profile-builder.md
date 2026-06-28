@@ -1,5 +1,7 @@
 # Profile Builder — Dashboard-Native, Full-Featured Profile Creation
 
+> **Related:** [Architecture](../../Architecture/01-Current-Architecture.md)
+
 Status: design proposal (not yet implemented)
 Author: drafted for Teknium
 Supersedes: PR #31781 (prompt_toolkit `hermes profile wizard`)

@@ -18,7 +18,9 @@
 
     /* Path aliases */
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@hermes/shared": ["../apps/shared/src/index.ts"],
+      "@hermes/shared/*": ["../apps/shared/src/*"]
     },
 
     /* Linting */

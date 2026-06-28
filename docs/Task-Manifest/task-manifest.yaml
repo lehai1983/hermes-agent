@@ -1,0 +1,267 @@
+# Task Manifest
+#
+# Audience: Machines (CI, dashboards), engineers via generated reports
+# Last updated: 2026-06-28
+# Format: YAML 2.1
+# Schema: see below (definitions block at bottom)
+
+manifest_version: 1
+project: hermes-web-migration
+generated: "2026-06-28"
+source_of_truth: /docs/Implementation-Workbook/
+
+epics:
+  - id: EPIC-1
+    title: Foundation
+    milestone: MILESTONE-0.1
+    status: planned
+  - id: EPIC-2
+    title: Migration
+    milestone: MILESTONE-0.2
+    status: planned
+  - id: EPIC-3
+    title: Sunset
+    milestone: MILESTONE-1.0
+    status: planned
+
+milestones:
+  - id: MILESTONE-0.1
+    title: "Web Chat Alpha"
+    target_date: 2026-09-30
+    status: planned
+  - id: MILESTONE-0.2
+    title: "Web Default"
+    target_date: 2026-12-31
+    status: planned
+  - id: MILESTONE-1.0
+    title: "Desktop Sunset"
+    target_date: 2027-06-30
+    status: planned
+
+tasks:
+  # --- EPIC-1: Foundation ---
+  - id: TASK-101
+    title: "@hermes/shared type catalog (hermes/shared)"
+    epic: EPIC-1
+    milestone: MILESTONE-0.1
+    module: shared
+    priority: P0
+    dependencies: []
+    estimated_effort: 2w
+    status: completed
+    verification_steps:
+      - cd apps/shared && npm run typecheck passes
+      - web/src imports from @hermes/shared
+      - apps/desktop imports types from @hermes/shared
+      - CI typecheck green on all workspaces
+    definition_of_done:
+      - Both web/ and desktop/ import shared types from @hermes/shared
+      - No duplicate type definitions in web/ and desktop/
+      - npm run typecheck passes on all workspaces
+    completed_at: 2026-06-28
+    actual_files:
+      - apps/shared/src/types/core.ts
+      - apps/shared/src/types/diverged.ts
+      - apps/shared/src/index.ts
+
+  - id: TASK-102
+    title: "Per-session SSE event stream"
+    epic: EPIC-1
+    milestone: MILESTONE-0.1
+    module: web_server
+    priority: P0
+    dependencies: [TASK-101]
+    estimated_effort: 2w
+    status: completed
+    verification_steps:
+      - SSE endpoint responds with text/event-stream
+      - Two simultaneous SSE clients work
+      - Invalid session_id returns 400
+      - Heartbeat every 15s
+      - DASHBOARD_EMBEDDED_CHAT_ENABLED gate works
+    definition_of_done:
+      - New route accepts session_id path parameter
+      - Heartbeat keeps connection alive
+      - Sends message.delta, tool.start, tool.complete events
+    completed_at: 2026-06-28
+    actual_files:
+      - hermes_cli/web_server.py (modified)
+
+  - id: TASK-103
+    title: "Lift assistant-ui chat components to web/"
+    epic: EPIC-1
+    milestone: MILESTONE-0.1
+    module: web
+    priority: P0
+    dependencies: [TASK-101]
+    estimated_effort: 3w
+    status: planned
+    verification_steps:
+      - Web chat renders message thread
+      - Streaming text updates as deltas arrive
+      - Tool approval card shows on tool call
+      - No ipcRenderer imports in web bundle
+    definition_of_done:
+      - Thread component renders in browser
+      - Streaming delta updates visible in real-time
+      - Tool approval requires user action before execution
+      - Works in Chrome, Firefox, Safari
+
+  - id: TASK-104
+    title: "New REST endpoints for web chat"
+    epic: EPIC-1
+    milestone: MILESTONE-0.1
+    module: web_server
+    priority: P0
+    dependencies: [TASK-102]
+    estimated_effort: 2w
+    status: planned
+    verification_steps:
+      - POST /api/sessions/{id}/messages returns 202
+      - GET /api/sessions/{id}/status returns current state
+      - POST /api/sessions/{id}/interrupt stops generation
+    definition_of_done:
+      - All 5 new endpoints documented in OpenAPI
+      - Postman collection updated
+      - Error responses follow standard shape
+
+  # --- EPIC-2: Migration ---
+  - id: TASK-201
+    title: "Lift desktop composer + voice controls"
+    epic: EPIC-2
+    milestone: MILESTONE-0.2
+    module: web
+    priority: P0
+    dependencies: [TASK-103]
+    estimated_effort: 3w
+    status: planned
+    verification_steps:
+      - Voice recording works in Chrome, Firefox
+      - Slash commands execute correctly
+      - Drag-drop attachments work for images, PDFs, plain files
+    definition_of_done:
+      - Composer has same features as desktop
+      - Voice-to-text to agent to TTS loop works
+      - All attachment types supported
+
+  - id: TASK-202
+    title: "Lift preview + terminal + review"
+    epic: EPIC-2
+    milestone: MILESTONE-0.2
+    module: web
+    priority: P1
+    dependencies: [TASK-102]
+    estimated_effort: 3w
+    status: planned
+    verification_steps:
+      - Preview pane renders HTML, Markdown, CSV
+      - Terminal pane connects via PTY
+      - Code review panel shows diffs
+    definition_of_done:
+      - Right-rail panel with tabs
+      - Terminal accepts input and shows output
+      - Review panel shows staged/unstaged changes
+
+  - id: TASK-203
+    title: "Freeze desktop feature development"
+    epic: EPIC-2
+    milestone: MILESTONE-0.2
+    module: desktop
+    priority: P0
+    dependencies: [TASK-201]
+    estimated_effort: 1w
+    status: planned
+    verification_steps:
+      - Desktop builds pass CI
+      - README shows maintenance notice
+      - No new feature PRs accepted
+    definition_of_done:
+      - README.md updated with deprecation notice
+      - GitHub label "desktop-deprecation" added
+      - MILESTONE-0.2 blog post published
+
+  # --- EPIC-3: Sunset ---
+  - id: TASK-301
+    title: "Implement pet system for web"
+    epic: EPIC-3
+    milestone: MILESTONE-1.0
+    module: web
+    priority: P2
+    dependencies: [TASK-201]
+    estimated_effort: 2w
+    status: planned
+    verification_steps:
+      - Pet animates smoothly at 60fps
+      - User can adopt, customize, disable
+    definition_of_done:
+      - Canvas 2D pet renderer
+      - Gallery with 5+ pets
+      - Enable/disable toggle in settings
+
+  - id: TASK-302
+    title: "Implement git review panel"
+    epic: EPIC-3
+    milestone: MILESTONE-1.0
+    module: web
+    priority: P1
+    dependencies: [TASK-202]
+    estimated_effort: 3w
+    status: planned
+    verification_steps:
+      - Git diff shown with syntax highlighting
+      - Stage, unstage, commit, push from browser
+    definition_of_done:
+      - Tree view of changed files
+      - Inline diff with +/- highlighting
+      - Commit message editor + push button
+
+  - id: TASK-303
+    title: "Desktop binary CI deprecation"
+    epic: EPIC-3
+    milestone: MILESTONE-1.0
+    module: ci
+    priority: P0
+    dependencies: [TASK-302]
+    estimated_effort: 1w
+    status: planned
+    verification_steps:
+      - Desktop not built in CI
+      - Last-good binaries available
+      - Sunset docs published
+    definition_of_done:
+      - CI no longer builds Electron
+      - Last binaries in release archive
+      - User-facing docs updated
+
+modules:
+  - name: web
+    display: Web SPA
+    path: web/
+  - name: desktop
+    display: Desktop (deprecating)
+    path: apps/desktop/
+  - name: shared
+    display: "@hermes/shared"
+    path: apps/shared/
+  - name: web_server
+    display: Dashboard Backend
+    path: hermes_cli/web_server.py
+  - name: gateway
+    display: Gateway
+    path: gateway/
+  - name: ci
+    display: CI/CD
+    path: .github/workflows/
+
+priority_levels:
+  P0: "blocking - cannot proceed to next milestone without this"
+  P1: "important - impacts user experience significantly"
+  P2: "nice-to-have - cosmetic, convenience, or legacy compat"
+
+statuses:
+  planned: task designed, not yet started
+  in_progress: actively being worked on
+  in_review: PR open, awaiting approval
+  completed: merged, verified, closed
+  cancelled: intentionally skipped
+  blocked: depends on another task not yet completed
