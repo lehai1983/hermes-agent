@@ -24,10 +24,10 @@ export function WelcomeScreen({ onSuggest }: WelcomeScreenProps) {
     <div className="flex flex-1 flex-col items-center justify-center px-6 py-12">
       {/* Logo / branding */}
       <div className="mb-8 text-center">
-        <h1 className="text-5xl font-bold tracking-tight text-gray-100 sm:text-6xl">
+        <h1 className="text-5xl font-bold tracking-tight text-foreground sm:text-6xl">
           Hermes
         </h1>
-        <p className="mt-2 text-lg text-gray-400">Your AI assistant</p>
+        <p className="mt-2 text-lg text-muted-foreground">Your AI assistant</p>
       </div>
 
       {/* Suggestion chips */}
@@ -37,7 +37,7 @@ export function WelcomeScreen({ onSuggest }: WelcomeScreenProps) {
             key={suggestion}
             type="button"
             onClick={() => onSuggest(suggestion)}
-            className="rounded-full border border-gray-700 bg-gray-900 px-4 py-2 text-sm text-gray-300 transition-colors hover:border-blue-600 hover:bg-blue-600/10 hover:text-blue-400"
+            className="rounded-full border border-border bg-background px-4 py-2 text-sm text-foreground transition-colors hover:border-midground hover:bg-midground/5 hover:text-midground"
           >
             {suggestion}
           </button>
@@ -45,7 +45,7 @@ export function WelcomeScreen({ onSuggest }: WelcomeScreenProps) {
       </div>
 
       {/* Footer hint */}
-      <p className="mt-10 text-xs text-gray-600">
+      <p className="mt-10 text-xs text-muted-foreground">
         Type a message or click a suggestion to get started
       </p>
     </div>

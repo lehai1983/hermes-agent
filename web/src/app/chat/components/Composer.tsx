@@ -18,7 +18,7 @@
  *   - Submit via POST /api/sessions/{id}/messages
  */
 
-import { useCallback, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useGateway } from '../lib/gateway'
 import { api, fetchJSON } from '@/lib/api'
 import { VoiceControls } from './VoiceControls'
@@ -51,6 +51,10 @@ export interface ComposerProps {
   gateway?: ReturnType<typeof useGateway>
   /** Called after a message is successfully sent. */
   onSend?: (text: string, attachments: ComposerAttachment[]) => void
+  /** External text to inject into the editor (e.g. from suggestion chips). */
+  initialText?: string
+  /** Callback after initialText has been injected into the editor. */
+  onTextInjected?: () => void
 }
 
 // ---------------------------------------------------------------------------
@@ -65,7 +69,7 @@ function execCmd(command: string, value?: string) {
 // Component
 // ---------------------------------------------------------------------------
 
-export function Composer({ sessionId, gateway: injectedGateway, onSend }: ComposerProps) {
+export function Composer({ sessionId, gateway: injectedGateway, onSend, initialText, onTextInjected }: ComposerProps) {
   const defaultGateway = useGateway()
   const gateway = injectedGateway ?? defaultGateway
 
@@ -79,6 +83,26 @@ export function Composer({ sessionId, gateway: injectedGateway, onSend }: Compos
   const editorRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dragCounterRef = useRef(0)
+
+  // ---------------------------------------------------------------------------
+  // Initial text injection (e.g. from WelcomeScreen suggestion chips)
+  // ---------------------------------------------------------------------------
+
+  useEffect(() => {
+    if (initialText && editorRef.current) {
+      editorRef.current.innerText = initialText
+      setEditorText(initialText)
+      editorRef.current.focus()
+      // Move caret to end
+      const range = document.createRange()
+      const sel = window.getSelection()
+      range.selectNodeContents(editorRef.current)
+      range.collapse(false)
+      sel?.removeAllRanges()
+      sel?.addRange(range)
+      onTextInjected?.()
+    }
+  }, [initialText, onTextInjected])
 
   // ---------------------------------------------------------------------------
   // Attachment helpers
@@ -356,7 +380,7 @@ export function Composer({ sessionId, gateway: injectedGateway, onSend }: Compos
   return (
     <div
       className={`flex flex-col gap-2 rounded-lg border ${
-        isDragging ? 'border-blue-500 bg-blue-500/5' : 'border-gray-700 bg-gray-900'
+        isDragging ? 'border-blue-500 bg-blue-500/5' : 'border-border bg-background-base'
       } p-3 transition-colors relative`}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
@@ -376,7 +400,7 @@ export function Composer({ sessionId, gateway: injectedGateway, onSend }: Compos
           {attachments.map((att) => (
             <div
               key={att.id}
-              className="flex items-center gap-2 rounded-md border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-300"
+              className="flex items-center gap-2 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
             >
               {att.previewUrl && (
                 <img
@@ -388,11 +412,11 @@ export function Composer({ sessionId, gateway: injectedGateway, onSend }: Compos
               <span className="max-w-[120px] truncate" title={att.name}>
                 {att.name}
               </span>
-              <span className="text-gray-500">({(att.size / 1024).toFixed(1)} KB)</span>
+              <span className="text-muted-foreground">({(att.size / 1024).toFixed(1)} KB)</span>
               <button
                 type="button"
                 onClick={() => removeAttachment(att.id)}
-                className="ml-1 text-gray-500 hover:text-red-400 transition-colors"
+                className="ml-1 text-muted-foreground hover:text-red-400 transition-colors"
                 aria-label={`Remove ${att.name}`}
               >
                 ×
@@ -403,13 +427,13 @@ export function Composer({ sessionId, gateway: injectedGateway, onSend }: Compos
       )}
 
       {/* Formatting toolbar */}
-      <div className="flex items-center gap-1 rounded-md border border-gray-700 bg-gray-800 px-2 py-1">
+      <div className="flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1">
         <button
           type="button"
           onMouseDown={(e) => e.preventDefault()}
           onClick={handleBold}
           disabled={isSubmitting}
-          className="flex h-7 w-7 items-center justify-center rounded text-sm font-bold text-gray-400 hover:bg-gray-700 hover:text-gray-100 transition-colors disabled:opacity-50"
+          className="flex h-7 w-7 items-center justify-center rounded text-sm font-bold text-muted-foreground hover:bg-background/80 hover:text-foreground transition-colors disabled:opacity-50"
           title="Bold (Ctrl+B)"
           aria-label="Bold"
         >
@@ -420,7 +444,7 @@ export function Composer({ sessionId, gateway: injectedGateway, onSend }: Compos
           onMouseDown={(e) => e.preventDefault()}
           onClick={handleItalic}
           disabled={isSubmitting}
-          className="flex h-7 w-7 items-center justify-center rounded text-sm italic text-gray-400 hover:bg-gray-700 hover:text-gray-100 transition-colors disabled:opacity-50"
+          className="flex h-7 w-7 items-center justify-center rounded text-sm italic text-muted-foreground hover:bg-background/80 hover:text-foreground transition-colors disabled:opacity-50"
           title="Italic (Ctrl+I)"
           aria-label="Italic"
         >
@@ -431,7 +455,7 @@ export function Composer({ sessionId, gateway: injectedGateway, onSend }: Compos
           onMouseDown={(e) => e.preventDefault()}
           onClick={handleCode}
           disabled={isSubmitting}
-          className="flex h-7 w-7 items-center justify-center rounded text-xs font-mono text-gray-400 hover:bg-gray-700 hover:text-gray-100 transition-colors disabled:opacity-50"
+          className="flex h-7 w-7 items-center justify-center rounded text-xs font-mono text-muted-foreground hover:bg-background/80 hover:text-foreground transition-colors disabled:opacity-50"
           title="Code (Ctrl+`)"
           aria-label="Code"
         >
@@ -442,7 +466,7 @@ export function Composer({ sessionId, gateway: injectedGateway, onSend }: Compos
           onMouseDown={(e) => e.preventDefault()}
           onClick={handleLink}
           disabled={isSubmitting}
-          className="flex h-7 w-7 items-center justify-center rounded text-gray-400 hover:bg-gray-700 hover:text-gray-100 transition-colors disabled:opacity-50"
+          className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-background/80 hover:text-foreground transition-colors disabled:opacity-50"
           title="Insert link"
           aria-label="Insert link"
         >
@@ -464,7 +488,7 @@ export function Composer({ sessionId, gateway: injectedGateway, onSend }: Compos
         onKeyDown={handleEditorKeyDown}
         onInput={handleEditorInput}
         onPaste={handleEditorPaste}
-        className="min-h-[60px] max-h-[200px] overflow-y-auto rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-600 disabled:opacity-50"
+        className="min-h-[60px] max-h-[200px] overflow-y-auto rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-blue-600 disabled:opacity-50"
         style={{
           whiteSpace: 'pre-wrap',
           overflowWrap: 'break-word',
@@ -487,7 +511,7 @@ export function Composer({ sessionId, gateway: injectedGateway, onSend }: Compos
             type="button"
             onClick={handlePickFiles}
             disabled={isSubmitting}
-            className="flex h-8 w-8 items-center justify-center rounded-md border border-gray-700 bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200 transition-colors disabled:opacity-50"
+            className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-background/80 hover:text-foreground transition-colors disabled:opacity-50"
             title="Attach files"
             aria-label="Attach files"
           >
@@ -505,7 +529,7 @@ export function Composer({ sessionId, gateway: injectedGateway, onSend }: Compos
                 className={`flex h-8 w-8 items-center justify-center rounded-md border transition-colors ${
                   showVoice
                     ? 'border-purple-500 bg-purple-500/20 text-purple-300 hover:bg-purple-500/30'
-                    : 'border-gray-700 bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                    : 'border-border bg-background text-muted-foreground hover:bg-background/80 hover:text-foreground'
                 }`}
                 title={showVoice ? 'Hide voice controls' : 'Show voice controls'}
                 aria-label="Toggle voice controls"
@@ -537,7 +561,7 @@ export function Composer({ sessionId, gateway: injectedGateway, onSend }: Compos
 
       {/* Error display */}
       {error && (
-        <div className="rounded-md border border-red-900 bg-red-950/50 px-3 py-1.5 text-xs text-red-300">
+        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs text-red-300">
           {error}
         </div>
       )}

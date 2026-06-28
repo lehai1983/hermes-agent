@@ -6,7 +6,7 @@ import { ShieldAlert } from 'lucide-react'
 import type { SudoRequest } from '../lib/useApprovalEvents'
 
 export function SudoPrompt({
-  request,
+  request: _request,
   onRespond,
 }: {
   request: SudoRequest

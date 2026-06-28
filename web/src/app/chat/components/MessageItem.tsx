@@ -13,6 +13,8 @@ import { Markdown } from '@/components/Markdown'
 
 export interface MessageItemProps {
   message: SessionMessage
+  /** Unique identifier for this message (not in SessionMessage). */
+  messageId?: string
   streaming?: boolean
   /** Whether this message is currently in edit mode. */
   isEditing?: boolean
@@ -45,6 +47,7 @@ function PencilIcon() {
 
 export function MessageItem({
   message,
+  messageId,
   streaming,
   isEditing,
   onEdit,
@@ -55,15 +58,12 @@ export function MessageItem({
   const name = isUser ? 'You' : message.role === 'assistant' ? 'Assistant' : message.role
 
   // Local state for the edit textarea value
-  const [editValue, setEditValue] = useState<string>(
-    typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? ''),
-  )
+  const contentStr = typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? '')
+  const [editValue, setEditValue] = useState<string>(contentStr)
 
   // Update editValue when message content changes (e.g. after commit)
-  const currentContent =
-    typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? '')
-  if (!isEditing && editValue !== currentContent) {
-    setEditValue(currentContent)
+  if (!isEditing && editValue !== contentStr) {
+    setEditValue(contentStr)
   }
 
   return (
@@ -76,16 +76,16 @@ export function MessageItem({
           isUser
             ? 'bg-blue-600 text-white'
             : message.role === 'system'
-              ? 'bg-gray-700 text-gray-200 italic'
-              : 'bg-gray-800 text-gray-100'
+              ? 'bg-background text-foreground italic'
+              : 'bg-background text-foreground'
         }`}
       >
         <div className="flex items-center justify-between gap-2">
           <div className="text-xs font-semibold opacity-70 mb-1">{name}</div>
           {/* Edit button — only for user messages, not currently editing */}
-          {isUser && !isEditing && onEdit && (
+          {isUser && !isEditing && onEdit && messageId && (
             <button
-              onClick={() => onEdit(message.id)}
+              onClick={() => onEdit(messageId)}
               className="opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity text-white/60 hover:text-white p-0.5"
               aria-label="Edit message"
               data-testid="edit-message-btn"
@@ -124,21 +124,19 @@ export function MessageItem({
                 className="rounded px-2.5 py-1 text-xs bg-white text-blue-700 font-medium hover:bg-blue-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 data-testid="edit-save-btn"
               >
-                Save &amp; Resend
+                Save & Resend
               </button>
             </div>
           </div>
         ) : message.role === 'assistant' ? (
           /* ── Assistant: markdown renderer ── */
           <div data-testid="markdown-content">
-            <Markdown content={message.content ?? ''} streaming={streaming === true} />
+            <Markdown content={typeof message.content === 'string' ? message.content : ''} streaming={streaming === true} />
           </div>
         ) : (
           /* ── Default: plain text ── */
           <div className="whitespace-pre-wrap break-words text-sm">
-            {typeof message.content === 'string'
-              ? message.content
-              : JSON.stringify(message.content)}
+            {contentStr}
           </div>
         )}
       </div>

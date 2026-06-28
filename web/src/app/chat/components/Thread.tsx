@@ -25,9 +25,9 @@ import { api } from '@/lib/api'
 import { MessageItem } from './MessageItem'
 import { ToolCallCard } from './ToolCallCard'
 import { ErrorBoundary } from './ErrorBoundary'
-import { VoiceControls } from './VoiceControls'
 import { trackMessageSent, trackToolCalled, trackError } from '../lib/analytics'
-import { isFeatureEnabled } from '@/lib/feature-flags'
+import { WelcomeScreen } from './WelcomeScreen'
+import { Composer } from './Composer'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -68,7 +68,7 @@ interface ToolRecord {
 // Component
 // ---------------------------------------------------------------------------
 
-function ThreadInner({ sessionId, sessionKey: _sessionKey, cwd, gateway: injectedGateway }: ThreadProps) {
+export function Thread({ sessionId, sessionKey: _sessionKey, cwd, gateway: injectedGateway }: ThreadProps) {
   // Gateway — injected or default hook
   const defaultGateway = useGateway()
   const gateway = injectedGateway ?? defaultGateway
@@ -83,9 +83,8 @@ function ThreadInner({ sessionId, sessionKey: _sessionKey, cwd, gateway: injecte
   const [tools, setTools] = useState<Record<string, ToolRecord>>({})
   const [error, setError] = useState<string | null>(null)
   const [greeting, setGreeting] = useState<string>('Chat')
-  const [inputValue, setInputValue] = useState('')
-  const [isSubmitting, setIsSubmitting] = useState(false)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
+  const [suggestionText, setSuggestionText] = useState<string | undefined>(undefined)
 
   // Refs for stable identity
   const messagesRef = useRef(messages)
@@ -282,14 +281,9 @@ function ThreadInner({ sessionId, sessionKey: _sessionKey, cwd, gateway: injecte
   // Actions
   // ---------------------------------------------------------------------------
 
-  const handleSubmit = useCallback(
-    async (text: string) => {
-      if (!text.trim() || isSubmitting) return
-
-      setIsSubmitting(true)
-      setError(null)
-
-      // Add user message immediately to the local list
+  /** Called by Composer after a message is successfully sent. Adds the user message to local state for immediate display. */
+  const handleComposerSend = useCallback(
+    (text: string, _attachments: { name: string; mimeType: string; size: number; ref?: string }[]) => {
       const userMsgId = `user-${Date.now()}`
       const userMsg: ChatMessage = {
         id: userMsgId,
@@ -297,24 +291,11 @@ function ThreadInner({ sessionId, sessionKey: _sessionKey, cwd, gateway: injecte
         content: text,
       }
       setMessages((prev) => [...prev, userMsg])
-      setInputValue('')
-
-      // Submit via gateway RPC (web replacement for IPC prompt.submit)
-      const result = await gateway.request<{ message_id?: string; ok?: boolean }>('prompt.submit', {
-        session_id: sessionId,
-        text,
-        cwd: cwd ?? undefined,
-      })
-
-      if (result.ok) {
-        trackMessageSent(sessionId)
-      } else {
-        setError(`Failed to send message: ${result.error}`)
-      }
-
-      setIsSubmitting(false)
+      trackMessageSent(sessionId)
+      // Clear any suggestion text that was injected
+      setSuggestionText(undefined)
     },
-    [sessionId, cwd, gateway, isSubmitting],
+    [sessionId],
   )
 
   const handleRetry = useCallback(() => {
@@ -351,7 +332,6 @@ function ThreadInner({ sessionId, sessionKey: _sessionKey, cwd, gateway: injecte
         prev.map((m) => (m.id === messageId ? { ...m, content: newText } : m)),
       )
       setEditingMessageId(null)
-      setIsSubmitting(true)
       setError(null)
 
       // Remove any assistant messages that came after the edited user message
@@ -372,8 +352,6 @@ function ThreadInner({ sessionId, sessionKey: _sessionKey, cwd, gateway: injecte
       if (!result.ok) {
         setError(`Failed to send message: ${result.error}`)
       }
-
-      setIsSubmitting(false)
     },
     [sessionId, cwd, gateway],
   )
@@ -383,11 +361,11 @@ function ThreadInner({ sessionId, sessionKey: _sessionKey, cwd, gateway: injecte
   // ---------------------------------------------------------------------------
 
   return (
-    <div className="flex flex-col h-full bg-gray-950 text-gray-100" data-testid="thread">
+    <div className="flex flex-col h-full bg-background-base text-foreground" data-testid="thread">
       {/* Banner / Greeting */}
-      <header className="shrink-0 border-b border-gray-800 px-3 py-2 sm:px-6 sm:py-3">
-        <h1 className="text-lg font-semibold text-gray-100">{greeting}</h1>
-        <div className="flex items-center gap-2 text-xs text-gray-500">
+      <header className="shrink-0 border-b border-border px-3 py-2 sm:px-6 sm:py-3">
+        <h1 className="text-lg font-semibold text-foreground">{greeting}</h1>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span>Session: {sessionId}</span>
           {streamStatus !== 'open' && (
             <span className="text-yellow-500">({streamStatus})</span>
@@ -397,7 +375,7 @@ function ThreadInner({ sessionId, sessionKey: _sessionKey, cwd, gateway: injecte
 
       {/* Error display */}
       {(error || streamError) && (
-        <div className="shrink-0 border-b border-red-900 bg-red-950/50 px-6 py-2 flex items-center justify-between">
+        <div className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-6 py-2 flex items-center justify-between">
           <span className="text-sm text-red-300">{error ?? streamError?.message}</span>
           <div className="flex gap-2">
             <button
@@ -408,7 +386,7 @@ function ThreadInner({ sessionId, sessionKey: _sessionKey, cwd, gateway: injecte
             </button>
             <button
               onClick={handleClearError}
-              className="rounded px-2 py-1 text-xs bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors"
+              className="rounded px-2 py-1 text-xs bg-background text-foreground hover:bg-background/80 transition-colors"
             >
               Clear
             </button>
@@ -419,7 +397,7 @@ function ThreadInner({ sessionId, sessionKey: _sessionKey, cwd, gateway: injecte
       {/* Message list — or welcome screen when empty */}
       <main className="flex-1 overflow-y-auto px-3 py-3 sm:px-6 sm:py-4 space-y-2">
         {messages.length === 0 ? (
-          <WelcomeScreen onSuggest={(text) => setInputValue(text)} />
+          <WelcomeScreen onSuggest={(text) => setSuggestionText(text)} />
         ) : (
           <>
             {messages.map((msg) => (
@@ -469,38 +447,15 @@ function ThreadInner({ sessionId, sessionKey: _sessionKey, cwd, gateway: injecte
       </main>
 
       {/* Composer input */}
-      <footer className="shrink-0 border-t border-gray-800 px-3 py-2 sm:px-6 sm:py-3">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault()
-            handleSubmit(inputValue)
-          }}
-          className="flex gap-2"
-        >
-          <input
-            type="text"
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            placeholder="Type a message…"
-            className="flex-1 rounded-md border border-gray-700 bg-gray-900 px-4 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-600"
-            disabled={isSubmitting}
-          />
-          {isFeatureEnabled('voice') && (
-            <VoiceControls
-              sessionId={sessionId}
-              onTranscript={(text) => setInputValue((prev) => (prev ? prev + ' ' + text : text))}
-            />
-          )}
-          <button
-            type="submit"
-            disabled={isSubmitting || !inputValue.trim()}
-            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {isSubmitting ? 'Sending…' : 'Send'}
-          </button>
-        </form>
+      <footer className="shrink-0 border-t border-border px-3 py-2 sm:px-6 sm:py-3">
+        <Composer
+          sessionId={sessionId}
+          onSend={handleComposerSend}
+          initialText={suggestionText}
+          onTextInjected={() => setSuggestionText(undefined)}
+        />
         {cwd && (
-          <div className="mt-1 text-xs text-gray-600">
+          <div className="mt-1 text-xs text-muted-foreground">
             cwd: {cwd}
           </div>
         )}
